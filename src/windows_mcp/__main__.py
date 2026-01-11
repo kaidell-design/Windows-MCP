@@ -88,7 +88,7 @@ def powershell_tool(command: str, ctx: Context = None) -> str:
 
 @mcp.tool(
     name='State-Tool',
-    description="Captures complete desktop state including: system language, focused/opened apps, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot (REQUIRES target_app - specify app name like 'DaVinci Resolve' or 'desktop' for full screen). Set quality='standard' (default, 720p, ~5k tokens) or quality='high' (1080p, ~10k tokens) to control screenshot resolution and token usage. Set use_dom=True for browser content to get web page elements instead of browser UI. Set use_wgc=True for GPU-accelerated windows like OBS, games, Discord (Windows Graphics Capture). Always call this first to understand the current desktop state before taking actions.",
+    description="Captures complete desktop state including: system language, focused/opened apps, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot (REQUIRES target_app - specify app name like 'DaVinci Resolve' or 'desktop' for full screen). Screenshots are 720p (~5k tokens) to minimize context usage. Set use_dom=True for browser content to get web page elements instead of browser UI. Set use_wgc=True for GPU-accelerated windows like OBS, games, Discord (Windows Graphics Capture). Always call this first to understand the current desktop state before taking actions.",
     annotations=ToolAnnotations(
         title="State Tool",
         readOnlyHint=True,
@@ -98,7 +98,7 @@ def powershell_tool(command: str, ctx: Context = None) -> str:
     )
     )
 @with_analytics(analytics, "State-Tool")
-def state_tool(use_vision:bool=False,use_dom:bool=False,use_wgc:bool=False,target_app:str|None=None,quality:Literal['standard','high']='standard', ctx: Context = None):
+def state_tool(use_vision:bool=False,use_dom:bool=False,use_wgc:bool=False,target_app:str|None=None, ctx: Context = None):
     # Require target_app when use_vision is True to prevent accidental terminal screenshots
     if use_vision and target_app is None:
         raise ValueError("target_app is required when use_vision=True. Specify an app name (e.g., 'DaVinci Resolve') or 'desktop' for full screen capture.")
@@ -110,13 +110,8 @@ def state_tool(use_vision:bool=False,use_dom:bool=False,use_wgc:bool=False,targe
             raise ValueError(f"Failed to switch to '{target_app}': {result}")
         pg.sleep(0.3)  # Wait for window to come to foreground
 
-    # Calculate scale factor based on quality setting
-    # standard: 720p (1280x720) - ~5k tokens, good for most UI tasks
-    # high: 1080p (1920x1080) - ~10k tokens, for fine detail inspection
-    if quality == 'high':
-        max_width, max_height = 1920, 1080
-    else:  # standard
-        max_width, max_height = 1280, 720
+    # Scale to 720p to minimize token usage (~5k tokens)
+    max_width, max_height = 1280, 720
     scale_width = max_width / screen_width if screen_width > max_width else 1.0
     scale_height = max_height / screen_height if screen_height > max_height else 1.0
     scale = min(scale_width, scale_height)  # Use the smaller scale to ensure both dimensions fit
@@ -131,7 +126,7 @@ def state_tool(use_vision:bool=False,use_dom:bool=False,use_wgc:bool=False,targe
     active_app=desktop_state.active_app_to_string()
 
     # Build screenshot info string if vision is enabled
-    screenshot_info = f"Screenshot: quality={quality}, {expected_width}x{expected_height} (scale={scale:.2f} from {screen_width}x{screen_height})" if use_vision else ""
+    screenshot_info = f"Screenshot: {expected_width}x{expected_height} (720p, scale={scale:.2f} from {screen_width}x{screen_height})" if use_vision else ""
 
     return [dedent(f'''
     Default Language of User:
