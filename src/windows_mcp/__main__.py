@@ -71,22 +71,6 @@ def app_tool(mode:Literal['launch','resize','switch'],name:str|None=None,window_
     return desktop.app(mode,name,window_loc,window_size)
     
 @mcp.tool(
-    name='Powershell-Tool',
-    description='Execute PowerShell commands directly on the Windows system and return output with status code. Supports all PowerShell cmdlets, scripts, and system commands. Use for file operations, system queries, and administrative tasks.',
-    annotations=ToolAnnotations(
-        title="Powershell Tool",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=True
-    )
-    )
-@with_analytics(analytics, "Powershell-Tool")
-def powershell_tool(command: str, ctx: Context = None) -> str:
-    response,status_code=desktop.execute_command(command)
-    return f'Response: {response}\nStatus Code: {status_code}'
-
-@mcp.tool(
     name='State-Tool',
     description="Captures complete desktop state including: system language, focused/opened apps, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot (REQUIRES target_app - specify app name like 'DaVinci Resolve' or 'desktop' for full screen). Screenshots are 720p (~5k tokens) to minimize context usage. Set use_dom=True for browser content to get web page elements instead of browser UI. Set use_wgc=True for GPU-accelerated windows like OBS, games, Discord (Windows Graphics Capture). Always call this first to understand the current desktop state before taking actions.",
     annotations=ToolAnnotations(
