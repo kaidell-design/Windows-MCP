@@ -538,8 +538,8 @@ class Tree:
         except Exception:
             pass
     
-    def get_annotated_screenshot(self, nodes: list[TreeElementNode],scale:float=1.0) -> Image.Image:
-        screenshot = self.desktop.get_screenshot()
+    def get_annotated_screenshot(self, nodes: list[TreeElementNode], scale: float = 1.0, use_wgc: bool = False, window_title: str = None) -> Image.Image:
+        screenshot = self.desktop.get_screenshot(use_wgc=use_wgc, window_title=window_title)
         sleep(0.10)
         
         original_width = screenshot.width

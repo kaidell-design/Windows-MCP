@@ -36,9 +36,94 @@ except Exception:
 
 import windows_mcp.uia as uia
 import pyautogui as pg
+import threading
+import tempfile
+
+# Windows Graphics Capture support for GPU-accelerated windows
+try:
+    from windows_capture import WindowsCapture, Frame, InternalCaptureControl
+    WGC_AVAILABLE = True
+except ImportError:
+    WGC_AVAILABLE = False
 
 pg.FAILSAFE=False
 pg.PAUSE=1.0
+
+
+def _wgc_screenshot(window_title: str) -> Image.Image | None:
+    """Capture a window using Windows Graphics Capture API.
+
+    This is required for GPU-accelerated windows like OBS, games, Discord, etc.
+    that don't render properly with standard screenshot methods.
+
+    Args:
+        window_title: Title of the window to capture (fuzzy matched)
+
+    Returns:
+        PIL Image object or None if capture failed
+    """
+    if not WGC_AVAILABLE:
+        logger.warning("Windows Graphics Capture API not available")
+        return None
+
+    captured_frame = {"data": None, "width": 0, "height": 0, "error": None}
+    capture_event = threading.Event()
+
+    try:
+        capture = WindowsCapture(
+            cursor_capture=False,
+            draw_border=False,
+            monitor_index=None,
+            window_name=window_title,
+        )
+
+        @capture.event
+        def on_frame_arrived(frame: Frame, capture_control: InternalCaptureControl):
+            try:
+                # Save frame to temp file, then read it back
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp_path = tmp.name
+
+                frame.save_as_image(tmp_path)
+
+                with open(tmp_path, "rb") as f:
+                    captured_frame["data"] = f.read()
+
+                # Get dimensions from the saved image
+                with Image.open(tmp_path) as img:
+                    captured_frame["width"] = img.width
+                    captured_frame["height"] = img.height
+
+                os.unlink(tmp_path)
+            except Exception as e:
+                captured_frame["error"] = str(e)
+            finally:
+                capture_control.stop()
+                capture_event.set()
+
+        @capture.event
+        def on_closed():
+            capture_event.set()
+
+        capture.start_free_threaded()
+
+        # Wait for capture with timeout
+        if not capture_event.wait(timeout=5.0):
+            logger.warning("WGC capture timed out")
+            return None
+
+        if captured_frame["error"]:
+            logger.warning(f"WGC capture error: {captured_frame['error']}")
+            return None
+
+        if captured_frame["data"]:
+            # Convert bytes to PIL Image
+            return Image.open(io.BytesIO(captured_frame["data"]))
+
+    except Exception as e:
+        logger.warning(f"WGC capture exception: {e}")
+
+    return None
 
 class Desktop:
     def __init__(self):
@@ -49,7 +134,7 @@ class Desktop:
     def get_resolution(self)->tuple[int,int]:
         return pg.size()
         
-    def get_state(self,use_vision:bool=False,use_dom:bool=False,as_bytes:bool=False,scale:float=1.0)->DesktopState:
+    def get_state(self,use_vision:bool=False,use_dom:bool=False,as_bytes:bool=False,scale:float=1.0,use_wgc:bool=False)->DesktopState:
         sleep(0.1)
         apps=self.get_apps()
         active_app=self.get_active_app()
@@ -59,7 +144,9 @@ class Desktop:
         logger.debug(f"Apps: {apps}")
         tree_state=self.tree.get_state(active_app,apps,use_dom=use_dom)
         if use_vision:
-            screenshot=self.tree.get_annotated_screenshot(tree_state.interactive_nodes,scale=scale)
+            # Get window title for WGC if active app exists
+            window_title = active_app.name if active_app and use_wgc else None
+            screenshot=self.tree.get_annotated_screenshot(tree_state.interactive_nodes,scale=scale,use_wgc=use_wgc,window_title=window_title)
             if as_bytes:
                 bytes_io=io.BytesIO()
                 screenshot.save(bytes_io,format='PNG')
@@ -224,20 +311,48 @@ class Desktop:
             self.bring_window_to_top(target_handle)
             content=f'Switched to {app_name.title()} window.'
         return content,0
+
+    def switch_to_app_direct(self,name:str)->tuple[str,int]:
+        """Switch to an app by name without requiring desktop_state to be set.
+        Queries fresh app list directly from Windows."""
+        apps={app.name:app for app in self.get_apps()}
+        matched_app:Optional[tuple[str,float]]=process.extractOne(name,list(apps.keys()),score_cutoff=70)
+        if matched_app is None:
+            return (f'Application {name.title()} not found.',1)
+        app_name,_=matched_app
+        app=apps.get(app_name)
+        target_handle=app.handle
+
+        if uia.IsIconic(target_handle):
+            uia.ShowWindow(target_handle, win32con.SW_RESTORE)
+            content=f'{app_name.title()} restored from Minimized state.'
+        else:
+            self.bring_window_to_top(target_handle)
+            content=f'Switched to {app_name.title()} window.'
+        return content,0
     
     def bring_window_to_top(self,target_handle:int):
         foreground_handle=win32gui.GetForegroundWindow()
         foreground_thread,_=win32process.GetWindowThreadProcessId(foreground_handle)
         target_thread,_=win32process.GetWindowThreadProcessId(target_handle)
+        attached=False
         try:
             ctypes.windll.user32.AllowSetForegroundWindow(-1)
-            win32process.AttachThreadInput(foreground_thread,target_thread,True)
+            # Skip attach if threads are the same (cant attach to self)
+            if foreground_thread != target_thread:
+                win32process.AttachThreadInput(foreground_thread,target_thread,True)
+                attached=True
             win32gui.SetForegroundWindow(target_handle)
             win32gui.BringWindowToTop(target_handle)
         except Exception as e:
             logger.error(f'Failed to bring window to top: {e}')
         finally:
-            win32process.AttachThreadInput(foreground_thread,target_thread,False)
+            # Only detach if we successfully attached
+            if attached:
+                try:
+                    win32process.AttachThreadInput(foreground_thread,target_thread,False)
+                except Exception:
+                    pass  # Ignore detach errors
     
     def get_element_handle_from_label(self,label:int)->uia.Control:
         tree_state=self.desktop_state.tree_state
@@ -445,7 +560,22 @@ class Desktop:
         width, height = uia.GetScreenSize()
         return Size(width=width,height=height)
 
-    def get_screenshot(self)->Image.Image:
+    def get_screenshot(self, use_wgc: bool = False, window_title: str = None) -> Image.Image:
+        """Take a screenshot of the desktop or a specific window.
+
+        Args:
+            use_wgc: If True, use Windows Graphics Capture API (required for GPU-accelerated windows)
+            window_title: Window title for WGC capture (required if use_wgc=True)
+
+        Returns:
+            PIL Image object
+        """
+        if use_wgc and window_title and WGC_AVAILABLE:
+            wgc_result = _wgc_screenshot(window_title)
+            if wgc_result:
+                logger.debug(f"WGC capture successful for '{window_title}'")
+                return wgc_result
+            logger.warning(f"WGC capture failed for '{window_title}', falling back to PyAutoGUI")
         return pg.screenshot()
     
     @contextmanager

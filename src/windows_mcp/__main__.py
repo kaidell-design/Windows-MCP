@@ -10,9 +10,12 @@ from fastmcp import FastMCP, Context
 from dotenv import load_dotenv
 from textwrap import dedent
 import pyautogui as pg
+import logging
 import asyncio
 import click
 import os
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -85,7 +88,7 @@ def powershell_tool(command: str, ctx: Context = None) -> str:
 
 @mcp.tool(
     name='State-Tool',
-    description='Captures complete desktop state including: system language, focused/opened apps, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot. Set use_dom=True for browser content to get web page elements instead of browser UI. Always call this first to understand the current desktop state before taking actions.',
+    description="Captures complete desktop state including: system language, focused/opened apps, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot (REQUIRES target_app - specify app name like 'DaVinci Resolve' or 'desktop' for full screen). Set quality='standard' (default, 720p, ~5k tokens) or quality='high' (1080p, ~10k tokens) to control screenshot resolution and token usage. Set use_dom=True for browser content to get web page elements instead of browser UI. Set use_wgc=True for GPU-accelerated windows like OBS, games, Discord (Windows Graphics Capture). Always call this first to understand the current desktop state before taking actions.",
     annotations=ToolAnnotations(
         title="State Tool",
         readOnlyHint=True,
@@ -95,18 +98,41 @@ def powershell_tool(command: str, ctx: Context = None) -> str:
     )
     )
 @with_analytics(analytics, "State-Tool")
-def state_tool(use_vision:bool=False,use_dom:bool=False, ctx: Context = None):
-    # Calculate scale factor to cap resolution at 1080p (1920x1080)
-    max_width, max_height = 1920, 1080
+def state_tool(use_vision:bool=False,use_dom:bool=False,use_wgc:bool=False,target_app:str|None=None,quality:Literal['standard','high']='standard', ctx: Context = None):
+    # Require target_app when use_vision is True to prevent accidental terminal screenshots
+    if use_vision and target_app is None:
+        raise ValueError("target_app is required when use_vision=True. Specify an app name (e.g., 'DaVinci Resolve') or 'desktop' for full screen capture.")
+
+    # Switch to target app before capturing (unless capturing desktop)
+    if target_app and target_app.lower() != 'desktop':
+        result, status = desktop.switch_to_app_direct(target_app)
+        if status != 0:
+            raise ValueError(f"Failed to switch to '{target_app}': {result}")
+        pg.sleep(0.3)  # Wait for window to come to foreground
+
+    # Calculate scale factor based on quality setting
+    # standard: 720p (1280x720) - ~5k tokens, good for most UI tasks
+    # high: 1080p (1920x1080) - ~10k tokens, for fine detail inspection
+    if quality == 'high':
+        max_width, max_height = 1920, 1080
+    else:  # standard
+        max_width, max_height = 1280, 720
     scale_width = max_width / screen_width if screen_width > max_width else 1.0
     scale_height = max_height / screen_height if screen_height > max_height else 1.0
     scale = min(scale_width, scale_height)  # Use the smaller scale to ensure both dimensions fit
-    
-    desktop_state=desktop.get_state(use_vision=use_vision,use_dom=use_dom,as_bytes=True,scale=scale)
+
+    expected_width = int(screen_width * scale)
+    expected_height = int(screen_height * scale)
+
+    desktop_state=desktop.get_state(use_vision=use_vision,use_dom=use_dom,as_bytes=True,scale=scale,use_wgc=use_wgc)
     interactive_elements=desktop_state.tree_state.interactive_elements_to_string()
     scrollable_elements=desktop_state.tree_state.scrollable_elements_to_string()
     apps=desktop_state.apps_to_string()
     active_app=desktop_state.active_app_to_string()
+
+    # Build screenshot info string if vision is enabled
+    screenshot_info = f"Screenshot: quality={quality}, {expected_width}x{expected_height} (scale={scale:.2f} from {screen_width}x{screen_height})" if use_vision else ""
+
     return [dedent(f'''
     Default Language of User:
     {default_language} with encoding: {desktop.encoding}
@@ -122,6 +148,7 @@ def state_tool(use_vision:bool=False,use_dom:bool=False, ctx: Context = None):
 
     List of Scrollable Elements:
     {scrollable_elements or 'No scrollable elements found.'}
+    {screenshot_info}
     ''')]+([Image(data=desktop_state.screenshot,format='png')] if use_vision else [])
 
 @mcp.tool(
